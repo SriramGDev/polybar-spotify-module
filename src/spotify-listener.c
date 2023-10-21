@@ -53,6 +53,11 @@ dbus_bool_t update_last_trackid(const char *trackid) {
     }
 }
 
+dbus_bool_t update_position() {
+	if (send_ipc_polybar(1, "hook:module/position2")) return TRUE;
+	return FALSE;
+}
+
 dbus_bool_t spotify_update_track(const char *current_trackid) {
     // If trackid didn't change
     if (last_trackid != NULL && strcmp(current_trackid, last_trackid) != 0) {

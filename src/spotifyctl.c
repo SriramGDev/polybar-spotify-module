@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 #include "../include/utils.h"
 
@@ -15,6 +16,7 @@ const char *STATUS_IFACE = "org.freedesktop.DBus.Properties";
 const char *STATUS_METHOD = "Get";
 const char *STATUS_METHOD_ARG_IFACE_NAME = "org.mpris.MediaPlayer2.Player";
 const char *STATUS_METHOD_ARG_PROPERTY_NAME = "Metadata";
+const char *STATUS_METHOD_POSITION = "Position";
 
 const char *PLAYER_IFACE = "org.mpris.MediaPlayer2.Player";
 const char *PLAYER_METHOD_PLAY = "Play";
@@ -25,6 +27,7 @@ const char *PLAYER_METHOD_PREVIOUS = "Previous";
 
 const char *METADATA_TITLE_KEY = "xesam:title";
 const char *METADATA_ARTIST_KEY = "xesam:artist";
+const char *METADATA_LENGTH_KEY= "mpris:length";
 
 /*** Program Mode ***/
 typedef enum {
@@ -34,7 +37,9 @@ typedef enum {
     MODE_PAUSE,
     MODE_PREVIOUS,
     MODE_NEXT,
-    MODE_PLAYPAUSE
+    MODE_PLAYPAUSE,
+    MODE_POSITION,
+    MODE_TRACK_LENGTH
 } ProgMode;
 
 // Predictable errors will be hidden if this is TRUE such as if spotify is not
@@ -112,6 +117,45 @@ char *get_song_artist_from_metadata(DBusMessage *msg) {
     }
 
     return artist;
+}
+
+char *get_song_length_from_metadata(DBusMessage *msg) {
+    DBusMessageIter iter;
+
+    dbus_message_iter_init(msg, &iter);
+
+    int length = 0;
+
+    // The message looks like this:
+    // string "org.mpris.MediaPlayer2.Player"
+    // array [
+    //    dict entry(
+    //       string "Metadata"
+    //       variant             array [
+    //          .
+    //          .
+    //          .
+    //             dict entry(
+    //                string "xesam:artist"
+    //                variant               string "{track artist}"
+    //             )
+    //       ]
+    //    )
+    // ]
+    // The track title is at the path:
+    // variant->array[xesam:artist]->variant->string
+
+    if (iter_try_step_into_type(&iter, DBUS_TYPE_VARIANT) &&
+        iter_try_step_into_type(&iter, DBUS_TYPE_ARRAY) &&
+        iter_try_step_to_key(&iter, METADATA_LENGTH_KEY) &&
+        iter_try_step_into_type(&iter, DBUS_TYPE_VARIANT)) {
+        dbus_message_iter_get_basic(&iter, &length);
+    }
+
+    char *length_in_seconds = malloc(20);
+    sprintf(length_in_seconds, "%.2f", length/1000000.0);
+
+    return length_in_seconds;
 }
 
 char *format_output(const char *artist, const char *title,
@@ -192,7 +236,7 @@ char *format_output(const char *artist, const char *title,
 
 void get_status(DBusConnection *connection, const int max_artist_length,
                 const int max_title_length, const int max_length,
-                const char *format, const char *trunc) {
+                const char *format, const char *trunc, const char *info) {
     DBusError err;
     dbus_error_init(&err);
 
@@ -205,7 +249,7 @@ void get_status(DBusConnection *connection, const int max_artist_length,
     // string "Metadata"
     dbus_message_append_args(
         msg, DBUS_TYPE_STRING, &STATUS_METHOD_ARG_IFACE_NAME, DBUS_TYPE_STRING,
-        &STATUS_METHOD_ARG_PROPERTY_NAME, DBUS_TYPE_INVALID);
+        &info, DBUS_TYPE_INVALID);
 
     // Send and receive reply
     DBusMessage *reply;
@@ -218,17 +262,42 @@ void get_status(DBusConnection *connection, const int max_artist_length,
         exit(1);
     }
 
-    char *title = get_song_title_from_metadata(reply);
-    char *artist = get_song_artist_from_metadata(reply);
+    
+    if(strcmp(info, STATUS_METHOD_POSITION) == 0) {
+	char output[20];
+	DBusMessageIter iter;
 
-    char *output = format_output(artist, title, max_artist_length,
+	dbus_message_iter_init(reply, &iter);
+
+	int position = 0;
+
+	if (iter_try_step_into_type(&iter, DBUS_TYPE_VARIANT)) {
+		dbus_message_iter_get_basic(&iter, &position);
+	}
+
+	//position /= 1000000;
+	sprintf(output, "%.2f", position/1000000.0);
+
+	puts(output);
+    } else if (strcmp(info, STATUS_METHOD_ARG_PROPERTY_NAME) == 0) {
+	char *output;
+	char *title = get_song_title_from_metadata(reply);
+	char *artist = get_song_artist_from_metadata(reply);
+	char *length = get_song_length_from_metadata(reply);
+	output = format_output(artist, title, max_artist_length,
                                  max_title_length, max_length, format, trunc);
+	char *final_output = malloc(strlen(output)+1+21);
+	strcpy(final_output, output);
+	strcat(final_output, "\n");
+	strcat(final_output, length);
 
-    puts(output);
+	free(length);
+	free(title);
+	free(artist);
 
-    free(output);
-    free(title);
-    free(artist);
+	puts(final_output);
+	free(final_output);
+    }
 
     dbus_message_unref(reply);
 }
@@ -369,7 +438,9 @@ int main(int argc, char *argv[]) {
             prog_mode = MODE_NEXT;
         } else if (strcmp(argv[i], "previous") == 0) {
             prog_mode = MODE_PREVIOUS;
-        } else if (strcmp(argv[i], "help") == 0) {
+        } else if (strcmp(argv[i], "position") == 0) {
+	    prog_mode = MODE_POSITION;
+	} else if (strcmp(argv[i], "help") == 0) {
             print_usage();
             return 0;
         } else {
@@ -398,7 +469,7 @@ int main(int argc, char *argv[]) {
 
         case MODE_STATUS:
             get_status(connection, max_artist_length, max_title_length,
-                       max_length, status_format, trunc);
+                       max_length, status_format, trunc, STATUS_METHOD_ARG_PROPERTY_NAME);
             break;
 
         case MODE_PLAY:
@@ -420,6 +491,11 @@ int main(int argc, char *argv[]) {
         case MODE_PREVIOUS:
             spotify_player_call(connection, PLAYER_METHOD_PREVIOUS);
             break;
+
+	case MODE_POSITION:
+	    get_status(connection, max_artist_length, max_title_length,
+			max_length, status_format, trunc, STATUS_METHOD_POSITION);
+	    break;
     }
 
     dbus_connection_unref(connection);

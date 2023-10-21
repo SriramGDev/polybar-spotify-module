@@ -2,6 +2,7 @@
 #define _SPOTIFY_STATUS_H_
 
 #include <dbus-1.0/dbus/dbus.h>
+#include <stdbool.h>
 
 /**
  * Extract the title of the currently playing song on spotify from a
@@ -70,7 +71,7 @@ char *format_output(const char *artist, const char *title,
  */
 void get_status(DBusConnection *connection, const int max_artist_length,
                 const int max_title_length, const int max_length,
-                const char *format, const char *trunc);
+                const char *format, const char *trunc, const char *info);
 
 /**
  * Call the specified org.mpris.MediaPlayer2.Player method
